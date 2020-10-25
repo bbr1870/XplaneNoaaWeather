@@ -10,16 +10,24 @@ of the License, or any later version.
 
 import threading
 import ssl
-import urllib2
+try:
+    from urllib2 import Request, urlopen, URLError
+except ImportError:
+    from urllib.request import Request, urlopen, URLError
 import zlib
 import os
 import subprocess
 import sys
+import io
 from datetime import datetime, timedelta
 from tempfile import TemporaryFile
 
-from util import util
-from conf import Conf
+try:
+    from util import util
+    from conf import Conf
+except ImportError:
+    from .util import util
+    from .conf import Conf
 
 
 class WeatherSource(object):
@@ -94,6 +102,11 @@ class GribWeatherSource(WeatherSource):
             return
 
         datecycle, cycle, forecast = self.get_cycle_date()
+        # forecast wrong number
+        remnd = forecast % 3
+        if remnd > 0:
+            forecast -= remnd
+        # forecast wrong number
         cache_file = self.get_cache_filename(datecycle, cycle, forecast)
 
         if not self.download:
@@ -105,7 +118,7 @@ class GribWeatherSource(WeatherSource):
             else:
                 # Trigger new download
                 url = self.get_download_url(datecycle, cycle, forecast)
-                print 'Downloading: %s' % cache_file
+                print('Downloading: %s' % cache_file)
                 self.download = AsyncTask(GribDownloader.download,
                                           url,
                                           cache_file_path,
@@ -120,7 +133,7 @@ class GribWeatherSource(WeatherSource):
 
                 self.download.join()
                 if isinstance(self.download.result, Exception):
-                    print 'Error Downloading Grib file: %s.' % str(self.download.result)
+                    print('Error Downloading Grib file: %s.' % str(self.download.result))
                     if os.path.isfile(cache_file):
                         util.remove(os.sep.join([self.cache_path, cache_file]))
                     # wait a try again
@@ -130,7 +143,7 @@ class GribWeatherSource(WeatherSource):
                     if not self.conf.keepOldFiles and self.last_grib:
                         util.remove(os.path.sep.join([self.cache_path, self.last_grib]))
                     self.last_grib = str(self.download.result.split(os.path.sep)[-1])
-                    print '%s successfully downloaded.' % self.last_grib
+                    print('%s successfully downloaded.' % self.last_grib)
 
                 # reset download
                 self.download = False
@@ -247,7 +260,7 @@ class GribDownloader(object):
 
         """
 
-        req = urllib2.Request(url)
+        req = Request(url)
         req.add_header('Accept-encoding', 'gzip, deflate')
 
         user_agent = kwargs.pop('user_agent', 'XPNOAAWeather/%s' % Conf.__VERSION__)
@@ -262,10 +275,12 @@ class GribDownloader(object):
         else:
             params = {}
 
-        response = urllib2.urlopen(req, **params)
+        print("Downloading part of {} with params: {}".format(url, params))
+        response = urlopen(req, **params)
 
         gz = False
         if url[-3:] == '.gz' or response.headers.get('content-encoding', '').find('gzip') > -1:
+            print("needs to be decompressed")
             gz = zlib.decompressobj(16 + zlib.MAX_WBITS)
 
         cancel = kwargs.pop('cancel_event', False)
@@ -275,11 +290,16 @@ class GribDownloader(object):
                 raise GribDownloaderCancel("Download canceled by user.")
 
             data = response.read(1024 * 128)
+            print("got more data")
             if not data:
                 # End of file
                 break
             if gz:
                 data = gz.decompress(data)
+                print("has been decompressed")
+            if isinstance(data, bytes):
+                if isinstance(file_out, io.TextIOWrapper):
+                    data = data.decode(file_out.encoding)
             file_out.write(data)
 
     @staticmethod
@@ -370,6 +390,8 @@ class GribDownloader(object):
                 GribDownloaderCancel: on cancel.
         """
 
+        if sys.version_info.major == 3:
+            binary = True
         variable_list = kwargs.pop('variable_list', [])
 
         if variable_list:
@@ -378,7 +400,7 @@ class GribDownloader(object):
                 idx_file.seek(0)
                 try:
                     cls.download_part('%s.idx' % url, idx_file, **kwargs)
-                except urllib2.URLError:
+                except URLError:
                     raise GribDownloaderError('Unable to download index file for: %s' % url)
 
                 idx_file.seek(0)
@@ -396,7 +418,7 @@ class GribDownloader(object):
             for chunk in chunk_list:
                 try:
                     cls.download_part('%s' % url, grib_file, start=chunk[0], end=chunk[1], **kwargs)
-                except urllib2.URLError as err:
+                except URLError as err:
                     raise GribDownloaderError('Unable to open url: %s\n\t%s' % (url, str(err)))
 
         wgrib2 = kwargs.pop('decompress', False)
